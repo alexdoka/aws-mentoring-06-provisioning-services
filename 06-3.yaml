@@ -1,0 +1,371 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: 'Create network infrustructure'
+# Metadata: 
+
+Parameters: 
+  NameVPC:
+    Type: String
+    Default: 'CustomVPC'
+  CidrBlock:
+    Type: String
+    Default: '10.20.0.0/16'
+    AllowedPattern: '((\d{1,3})\.){3}\d{1,3}/\d{1,2}'
+    Description: create VPC
+  AllowSubnet:
+    Type: String
+    Default: "46.53.0.0/16"
+    AllowedPattern: '((\d{1,3})\.){3}\d{1,3}/\d{1,2}'
+  KeyPair: 
+    Description: "The EC2 Key Pair to allow SSH access to the instance"
+    Type: "AWS::EC2::KeyPair::KeyName" 
+  LatestUbuntuFocalAMI:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/focal/stable/current/amd64/hvm/ebs-gp2/ami-id    
+
+# Mappings: 
+# Conditions: 
+Resources: 
+  CustomVPC:
+    Type: AWS::EC2::VPC
+    Properties: 
+      CidrBlock: !Ref CidrBlock
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: 'Name'
+          Value: !Ref NameVPC
+  myInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+      - Key: Name
+        Value: 'myInternetGateway'
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref CustomVPC
+      InternetGatewayId: !Ref myInternetGateway
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Description: Creating Amazon S3 bucket from CloudFormation
+    Properties:
+      BucketName: !Sub '${AWS::StackName}-alexdoka-s3' 
+
+
+  SecurityGroupAppLB:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+        GroupDescription: Allow http on 80 tcp
+        VpcId: !Ref CustomVPC
+        SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        SecurityGroupEgress:
+          - Description: Allow all outbound traffic
+            IpProtocol: "-1"
+            CidrIp: 0.0.0.0/0
+        Tags:
+          - Key: Name
+            Value: LB-sg 
+  SecurityGroupWebSshPublic:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+        GroupDescription: Allow http and ssh to client host
+        VpcId: !Ref CustomVPC
+        SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: !Ref AllowSubnet
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref AllowSubnet          
+        SecurityGroupEgress:
+          - Description: Allow all outbound traffic
+            IpProtocol: "-1"
+            CidrIp: 0.0.0.0/0
+        Tags:
+          - Key: Name
+            Value: web-ssh 
+  SecurityGroupEC2Private:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+        GroupDescription: Allow http and ssh to client host
+        VpcId: !Ref CustomVPC
+        SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref SecurityGroupAppLB  
+        SecurityGroupEgress:
+          - Description: Allow all outbound traffic
+            IpProtocol: "-1"
+            CidrIp: 0.0.0.0/0
+        Tags:
+          - Key: Name
+            Value: web-ec2            
+                      
+  Public0: 
+    Type: "AWS::EC2::Subnet"
+    Properties: 
+      VpcId: !Ref CustomVPC
+      CidrBlock: !Select [ 0, !Cidr [ !Ref "CidrBlock", "256", "8" ] ]
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: Public0
+  Public1: 
+    Type: "AWS::EC2::Subnet"
+    Properties: 
+      VpcId: !Ref CustomVPC
+      CidrBlock: !Select [ 1, !Cidr [ !Ref "CidrBlock", "256", "8" ] ]
+      AvailabilityZone: !Select [ 1, !GetAZs '' ]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: Public1        
+  Private0: 
+    Type: "AWS::EC2::Subnet"
+    Properties: 
+      VpcId: !Ref CustomVPC
+      CidrBlock: !Select [ 2, !Cidr [ !Ref "CidrBlock", "256", "8" ] ]
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: Private0        
+  Private1: 
+    Type: "AWS::EC2::Subnet"
+    Properties: 
+      VpcId: !Ref CustomVPC
+      CidrBlock: !Select [ 3, !Cidr [ !Ref "CidrBlock", "256", "8" ] ]
+      AvailabilityZone: !Select [ 1, !GetAZs '' ]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: Private1   
+  MyEIP1:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: !Ref CustomVPC
+  MyEIP2:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: !Ref CustomVPC      
+  NATgw0:
+     Type: AWS::EC2::NatGateway
+     Properties:
+        AllocationId: !GetAtt MyEIP1.AllocationId
+        SubnetId: !Ref Public0
+        Tags:
+        - Key: Name
+          Value: NATgw0    
+  NATgw1:
+     Type: AWS::EC2::NatGateway
+     Properties:
+        AllocationId: !GetAtt MyEIP2.AllocationId
+        SubnetId: !Ref Public1
+        Tags:
+        - Key: Name
+          Value: NATgw1             
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref CustomVPC
+      Tags:
+      - Key: Name
+        Value: PublicRouteTable
+  PrivateRouteTableA:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref CustomVPC
+      Tags:
+      - Key: Name
+        Value: PrivateRouteTableA    
+  PrivateRouteTableB:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref CustomVPC
+      Tags:
+      - Key: Name
+        Value: PrivateRouteTableB               
+  RouteToInet:
+    Type: AWS::EC2::Route
+    Properties:
+       RouteTableId: !Ref PublicRouteTable
+       DestinationCidrBlock: 0.0.0.0/0
+       GatewayId: !Ref myInternetGateway
+  RouteToInetThroughNAT0:
+    Type: AWS::EC2::Route
+    Properties:
+       RouteTableId: !Ref PrivateRouteTableA
+       DestinationCidrBlock: 0.0.0.0/0
+       NatGatewayId: !Ref NATgw0   
+  RouteToInetThroughNAT1:
+    Type: AWS::EC2::Route
+    Properties:
+       RouteTableId: !Ref PrivateRouteTableB
+       DestinationCidrBlock: 0.0.0.0/0
+       NatGatewayId: !Ref NATgw1        
+  Private0RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref Private0
+      RouteTableId: !Ref PrivateRouteTableA    
+  Private1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref Private1
+      RouteTableId: !Ref PrivateRouteTableB            
+  Public0RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref Public0
+      RouteTableId: !Ref PublicRouteTable    
+  Public1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref Public1
+      RouteTableId: !Ref PublicRouteTable          
+
+#======================================================
+
+  S3ReadRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Sub 'S3Read-${AWS::Region}-${AWS::StackName}'
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "s3:Get*"
+                  - "s3:List*"
+                  - "s3-object-lambda:Get*"
+                  - "s3-object-lambda:List*"                  
+                Resource: !Join
+                  - ''
+                  - - 'arn:aws:s3:::'
+                    - !Sub '${AWS::StackName}-alexdoka-s3'
+                    - /*
+
+  CustomInstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      Path: /
+      Roles:
+        - !Ref S3ReadRole
+
+#======================================================
+# launch template
+  CustomLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties: 
+      LaunchTemplateName: !Sub ${AWS::StackName}-launch-template
+      LaunchTemplateData:
+        IamInstanceProfile:
+          Arn: !GetAtt
+            - CustomInstanceProfile
+            - Arn       
+        ImageId: !Ref LatestUbuntuFocalAMI
+        InstanceType: t2.micro
+        KeyName: !Ref KeyPair
+        SecurityGroupIds: [ !Ref SecurityGroupEC2Private ]
+        UserData:
+          Fn::Base64: !Sub |
+             #!/bin/bash
+             apt update -y
+             apt install apache2 -y
+             systemctl start apache2
+             systemctl enable apache2
+             curl -s http://169.254.169.254/latest/meta-data/local-ipv4 > /var/www/html/index.html
+
+  ApplicationLoadBalancer:
+      Type: "AWS::ElasticLoadBalancingV2::LoadBalancer"
+      Properties:
+          Name: "custom-lb"
+          Scheme: "internet-facing"
+          Type: "application"
+          Subnets: 
+            - !Ref Public0
+            - !Ref Public1
+          SecurityGroups: 
+            - !Ref SecurityGroupAppLB
+          IpAddressType: "ipv4"      
+
+  EC2TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 30
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 15
+      HealthyThresholdCount: 5
+      TargetType: instance
+      Matcher:
+        HttpCode: '200'
+      Name: EC2TargetGroup
+      Port: 80
+      Protocol: HTTP
+      VpcId: !Ref CustomVPC
+      Tags:
+      - Key: Name
+        Value: EC2TargetGroup
+      - Key: Port
+        Value: 80
+
+  HTTPListener:
+    Type: "AWS::ElasticLoadBalancingV2::Listener"
+    Properties:
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: "HTTP"
+      DefaultActions: 
+        - Order: 1
+          TargetGroupArn: !Ref EC2TargetGroup
+          Type: "forward"            
+
+  myASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: myASG
+      MinSize: "2"
+      MaxSize: "2"
+      DesiredCapacity: "2"
+      HealthCheckGracePeriod: 300
+      TargetGroupARNs: 
+        - !Ref EC2TargetGroup
+      LaunchTemplate:
+        LaunchTemplateId: !Ref CustomLaunchTemplate
+        Version: !GetAtt CustomLaunchTemplate.LatestVersionNumber
+      VPCZoneIdentifier:
+        - !Ref Private0
+        - !Ref Private1
+      Tags:
+        - Key: Name
+          Value: myASG
+          PropagateAtLaunch: "true"
+
+
+Outputs:
+  ALBaddress:
+    Description: "DNS name for ALB"
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
+
+
+
